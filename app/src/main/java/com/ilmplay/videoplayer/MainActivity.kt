@@ -27,26 +27,35 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
@@ -93,14 +102,14 @@ fun Root() {
     else darkColorScheme(primary = a, background = Color(0xFF121212), surface = Color(0xFF1E1E1E))
     MaterialTheme(colorScheme = scheme) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            App(accent, light, { accent = it; cfg.edit().putInt("accent", it).apply() },
+            App(cfg, accent, light, { accent = it; cfg.edit().putInt("accent", it).apply() },
                 { light = it; cfg.edit().putBoolean("light", it).apply() })
         }
     }
 }
 
 @Composable
-fun App(accent: Int, light: Boolean, setAccent: (Int) -> Unit, setLight: (Boolean) -> Unit) {
+fun App(cfg: SharedPreferences, accent: Int, light: Boolean, setAccent: (Int) -> Unit, setLight: (Boolean) -> Unit) {
     val ctx = LocalContext.current
     val prefs = remember { ctx.getSharedPreferences("pos", Context.MODE_PRIVATE) }
     val perm = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO else Manifest.permission.READ_EXTERNAL_STORAGE
@@ -114,12 +123,13 @@ fun App(accent: Int, light: Boolean, setAccent: (Int) -> Unit, setLight: (Boolea
     var query by remember { mutableStateOf("") }
     var searching by remember { mutableStateOf(false) }
     var folder by remember { mutableStateOf<String?>(null) }
-    var playing by remember { mutableStateOf<Vid?>(null) }
+    var queue by remember { mutableStateOf<List<Vid>>(emptyList()) }
+    var qIdx by remember { mutableStateOf(-1) }
     var tick by remember { mutableStateOf(0) }
 
-    playing?.let { v ->
-        BackHandler { playing = null; tick++ }
-        PlayerScreen(v, prefs) { playing = null; tick++ }
+    if (qIdx >= 0) {
+        BackHandler { qIdx = -1; tick++ }
+        PlayerScreen(queue, qIdx, prefs, cfg) { qIdx = -1; tick++ }
         return
     }
     BackHandler(folder != null) { folder = null }
@@ -128,19 +138,20 @@ fun App(accent: Int, light: Boolean, setAccent: (Int) -> Unit, setLight: (Boolea
     val last = all.find { it.id == lastId }
     val shown = all.filter { it.name.contains(query, true) && (folder == null || it.folder == folder) }
     fun go(t: Int) { tab = t; folder = null; query = ""; searching = false }
+    fun play(list: List<Vid>, v: Vid) { queue = list; qIdx = list.indexOf(v).coerceAtLeast(0) }
 
     Scaffold(bottomBar = {
         Column {
-            if (last != null) MiniBar(last, prefs) { playing = last }
+            if (last != null) MiniBar(last, prefs) { play(all, last) }
             NavigationBar {
-                NavigationBarItem(tab == 0, { go(0) }, { Text("🎬") }, label = { Text("Video") })
-                NavigationBarItem(tab == 1, { go(1) }, { Text("📁") }, label = { Text("Folders") })
-                NavigationBarItem(tab == 2, { go(2) }, { Text("🎨") }, label = { Text("Theme") })
+                NavigationBarItem(tab == 0, { go(0) }, { Icon(Icons.Rounded.VideoLibrary, null) }, label = { Text("Video") })
+                NavigationBarItem(tab == 1, { go(1) }, { Icon(Icons.Rounded.Folder, null) }, label = { Text("Folders") })
+                NavigationBarItem(tab == 2, { go(2) }, { Icon(Icons.Rounded.Settings, null) }, label = { Text("Settings") })
             }
         }
     }) { pad ->
         Column(Modifier.padding(pad).padding(horizontal = 12.dp)) {
-            val title = when { tab == 2 -> "Theme"; tab == 1 -> folder ?: "Folders"; else -> "All videos" }
+            val title = when { tab == 2 -> "Settings"; tab == 1 -> folder ?: "Folders"; else -> "All videos" }
             val canSearch = tab == 0 || (tab == 1 && folder != null)
             Row(Modifier.fillMaxWidth().height(52.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (searching) {
@@ -152,51 +163,91 @@ fun App(accent: Int, light: Boolean, setAccent: (Int) -> Unit, setLight: (Boolea
                             cursorBrush = SolidColor(MaterialTheme.colorScheme.primary), modifier = Modifier.fillMaxWidth())
                         if (query.isEmpty()) Text("Search", color = Color.Gray)
                     }
-                    Text("✕", Modifier.clickable { searching = false; query = "" }.padding(12.dp), fontSize = 18.sp)
+                    IconButton({ searching = false; query = "" }) { Icon(Icons.Rounded.Close, null) }
                 } else {
                     Text(title, Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    if (canSearch) Text("🔍", Modifier.clickable { searching = true }.padding(12.dp), fontSize = 20.sp)
+                    if (canSearch) IconButton({ searching = true }) { Icon(Icons.Rounded.Search, null) }
                 }
             }
             if (tab == 2) {
-                Text("Colorful Themes", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp))
-                Row(Modifier.padding(vertical = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    themes.forEachIndexed { i, c ->
-                        Box(Modifier.size(40.dp).clip(CircleShape).background(c)
-                            .then(if (i == accent) Modifier.border(3.dp, MaterialTheme.colorScheme.onBackground, CircleShape) else Modifier)
-                            .clickable { setAccent(i) })
-                    }
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Light theme", Modifier.weight(1f)); Switch(light, setLight)
-                }
+                SettingsTab(cfg, accent, light, setAccent, setLight)
             } else if (tab == 1 && folder == null) {
                 LazyColumn {
                     items(all.groupBy { it.folder }.toList()) { (name, list) ->
-                        Row(Modifier.fillMaxWidth().clickable { folder = name }.padding(14.dp)) {
-                            Text("📁  $name", Modifier.weight(1f)); Text("${list.size} videos", color = Color.Gray)
+                        Row(Modifier.fillMaxWidth().clickable { folder = name }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            FolderIcon(Modifier.size(64.dp, 52.dp), name == "Camera")
+                            Column(Modifier.padding(start = 16.dp)) {
+                                Text(name, fontSize = 17.sp)
+                                Text(if (list.size == 1) "1 video" else "${list.size} videos", color = Color.Gray, fontSize = 13.sp)
+                            }
                         }
                     }
                 }
             } else {
-                LazyVerticalGrid(GridCells.Fixed(3), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                LazyVerticalGrid(GridCells.Fixed(2), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(shown) { v ->
-                        Column(Modifier.clip(MaterialTheme.shapes.small).background(MaterialTheme.colorScheme.surface).clickable { playing = v }) {
+                        Column(Modifier.clip(MaterialTheme.shapes.medium).background(MaterialTheme.colorScheme.surface).clickable { play(shown, v) }) {
                             Box {
-                                Thumb(v, Modifier.fillMaxWidth().height(70.dp))
-                                Text(fmt(v.dur), Modifier.align(Alignment.BottomEnd).background(Color(0x99000000)).padding(horizontal = 4.dp),
-                                    color = Color.White, fontSize = 10.sp)
+                                Thumb(v, Modifier.fillMaxWidth().height(96.dp))
+                                Text(fmt(v.dur), Modifier.align(Alignment.BottomEnd).padding(4.dp).background(Color(0x99000000), RoundedCornerShape(4.dp)).padding(horizontal = 4.dp),
+                                    color = Color.White, fontSize = 11.sp)
                             }
-                            Column(Modifier.padding(5.dp)) {
-                                Text(v.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 11.sp)
-                                Text(mb(v.size), color = Color.Gray, fontSize = 10.sp)
+                            Column(Modifier.padding(8.dp)) {
+                                Text(v.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp)
+                                Text(mb(v.size), color = Color.Gray, fontSize = 11.sp)
                                 val pr = prefs.getLong("p${v.id}", 0)
                                 LinearProgressIndicator(progress = { if (v.dur > 0) (pr.toFloat() / v.dur).coerceIn(0f, 1f) else 0f },
-                                    Modifier.fillMaxWidth().padding(top = 3.dp))
+                                    Modifier.fillMaxWidth().padding(top = 4.dp))
                             }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun FolderIcon(m: Modifier, camera: Boolean) {
+    val c = Color(0xFF454D58)
+    Box(m, contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val w = size.width; val h = size.height
+            drawRoundRect(c, Offset(0f, h * 0.05f), androidx.compose.ui.geometry.Size(w * 0.42f, h * 0.3f), CornerRadius(h * 0.1f))
+            drawRoundRect(c, Offset(0f, h * 0.18f), androidx.compose.ui.geometry.Size(w, h * 0.82f), CornerRadius(h * 0.12f))
+        }
+        if (camera) Icon(Icons.Rounded.PhotoCamera, null, tint = Color(0xFF7A828F), modifier = Modifier.padding(top = 8.dp).size(24.dp))
+    }
+}
+
+@Composable
+fun SettingsTab(cfg: SharedPreferences, accent: Int, light: Boolean, setAccent: (Int) -> Unit, setLight: (Boolean) -> Unit) {
+    var spd by remember { mutableStateOf(cfg.getFloat("speed", 1f)) }
+    var seek by remember { mutableStateOf(cfg.getInt("seek", 10)) }
+    var gest by remember { mutableStateOf(cfg.getBoolean("gest", true)) }
+    Column(Modifier.padding(top = 4.dp)) {
+        Text("Colorful Themes", style = MaterialTheme.typography.titleMedium)
+        Row(Modifier.padding(vertical = 14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            themes.forEachIndexed { i, c ->
+                Box(Modifier.size(40.dp).clip(CircleShape).background(c)
+                    .then(if (i == accent) Modifier.border(3.dp, MaterialTheme.colorScheme.onBackground, CircleShape) else Modifier)
+                    .clickable { setAccent(i) })
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) { Text("Light theme", Modifier.weight(1f)); Switch(light, setLight) }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Gesture control", Modifier.weight(1f)); Switch(gest, { gest = it; cfg.edit().putBoolean("gest", it).apply() })
+        }
+        Text("Default playback speed", Modifier.padding(top = 14.dp, bottom = 6.dp), style = MaterialTheme.typography.titleMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(0.5f, 1f, 1.5f, 2f).forEach { s ->
+                FilterChip(spd == s, { spd = s; cfg.edit().putFloat("speed", s).apply() }, { Text("${s}x") })
+            }
+        }
+        Text("Double tap seek (seconds)", Modifier.padding(top = 14.dp, bottom = 6.dp), style = MaterialTheme.typography.titleMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(5, 10, 15, 30).forEach { s ->
+                FilterChip(seek == s, { seek = s; cfg.edit().putInt("seek", s).apply() }, { Text("${s}s") })
             }
         }
     }
@@ -212,7 +263,7 @@ fun MiniBar(v: Vid, prefs: SharedPreferences, onOpen: () -> Unit) {
                 Text(v.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp)
                 Text("${fmt(pos)} / ${fmt(v.dur)}", color = Color.Gray, fontSize = 12.sp)
             }
-            Text("▶", fontSize = 26.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 8.dp))
+            Icon(Icons.Rounded.PlayArrow, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 8.dp).size(32.dp))
         }
         LinearProgressIndicator(progress = { if (v.dur > 0) (pos.toFloat() / v.dur).coerceIn(0f, 1f) else 0f }, Modifier.fillMaxWidth())
     }
@@ -228,37 +279,78 @@ fun Thumb(v: Vid, m: Modifier) {
 }
 
 @Composable
-fun PlayerScreen(v: Vid, prefs: SharedPreferences, onClose: () -> Unit) {
+fun SideBar(modifier: Modifier, pct: Int, icon: ImageVector) {
+    Column(modifier, horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("$pct%", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(8.dp))
+        Box(Modifier.width(4.dp).height(110.dp).clip(RoundedCornerShape(2.dp)).background(Color(0x66FFFFFF)), contentAlignment = Alignment.BottomCenter) {
+            Box(Modifier.width(4.dp).fillMaxHeight(pct.coerceIn(0, 100) / 100f).background(MaterialTheme.colorScheme.primary))
+        }
+        Spacer(Modifier.height(8.dp))
+        Icon(icon, null, tint = Color.White, modifier = Modifier.size(22.dp))
+    }
+}
+
+@Composable
+fun PlayerScreen(list: List<Vid>, startIdx: Int, prefs: SharedPreferences, cfg: SharedPreferences, onClose: () -> Unit) {
     val ctx = LocalContext.current
     val act = ctx as ComponentActivity
     val am = remember { ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
     val maxVol = remember { am.getStreamMaxVolume(AudioManager.STREAM_MUSIC) }
+    val seekMs = remember { cfg.getInt("seek", 10) * 1000L }
+    val gest = remember { cfg.getBoolean("gest", true) }
+    val speeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
+    var idx by remember { mutableStateOf(startIdx) }
+    val cur = rememberUpdatedState(idx)
+    val v = list[idx]
     val player = remember {
         ExoPlayer.Builder(ctx).build().apply {
-            setMediaItem(MediaItem.fromUri(v.uri)); prepare()
-            seekTo(prefs.getLong("p${v.id}", 0)); playWhenReady = true
+            setMediaItem(MediaItem.fromUri(list[startIdx].uri)); prepare()
+            seekTo(prefs.getLong("p${list[startIdx].id}", 0)); playWhenReady = true
+            setPlaybackSpeed(cfg.getFloat("speed", 1f))
         }
     }
-    val speeds = listOf(0.5f, 1f, 1.5f, 2f)
-    var si by remember { mutableStateOf(1) }
-    var sleepMin by remember { mutableStateOf(0) }
-    var showCtl by remember { mutableStateOf(true) }
+    var si by remember { mutableStateOf(speeds.indexOf(cfg.getFloat("speed", 1f)).let { if (it < 0) 2 else it }) }
+    var showCtl by remember { mutableStateOf(false) }
+    var locked by remember { mutableStateOf(false) }
     var isPlay by remember { mutableStateOf(true) }
     var pos by remember { mutableStateOf(0L) }
     var hud by remember { mutableStateOf("") }
+    var volP by remember { mutableStateOf(-1) }
+    var briP by remember { mutableStateOf(-1) }
     var scale by remember { mutableStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
+    var zooming by remember { mutableStateOf(false) }
     var land by remember { mutableStateOf(false) }
+    var resize by remember { mutableStateOf(0) }
+    var pa by remember { mutableStateOf(-1L) }
+    var pb by remember { mutableStateOf(-1L) }
     val dur = v.dur.coerceAtLeast(1L)
 
-    fun save() { prefs.edit().putLong("p${v.id}", player.currentPosition).putLong("last", v.id).apply() }
-    LaunchedEffect(Unit) { while (true) { pos = player.currentPosition; isPlay = player.isPlaying; delay(300) } }
-    LaunchedEffect(showCtl, isPlay) { if (showCtl && isPlay) { delay(3500); showCtl = false } }
-    LaunchedEffect(sleepMin) { if (sleepMin > 0) { delay(sleepMin * 60_000L); player.pause() } }
+    fun save() { val vv = list[cur.value]; prefs.edit().putLong("p${vv.id}", player.currentPosition).putLong("last", vv.id).apply() }
+    fun open(i: Int) {
+        if (i !in list.indices) return
+        save(); idx = i; pa = -1; pb = -1
+        val nv = list[i]
+        player.setMediaItem(MediaItem.fromUri(nv.uri)); player.prepare()
+        player.seekTo(prefs.getLong("p${nv.id}", 0)); player.play()
+    }
+    LaunchedEffect(Unit) {
+        while (true) {
+            pos = player.currentPosition; isPlay = player.isPlaying
+            if (pb > 0 && pos >= pb && pa >= 0) player.seekTo(pa)
+            delay(300)
+        }
+    }
+    LaunchedEffect(showCtl, isPlay) { if (showCtl && isPlay) { delay(3000); showCtl = false } }
     DisposableEffect(Unit) {
         act.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        val ic = WindowCompat.getInsetsController(act.window, act.window.decorView)
+        ic.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        ic.hide(WindowInsetsCompat.Type.systemBars())
         onDispose {
             save(); player.release()
+            ic.show(WindowInsetsCompat.Type.systemBars())
             act.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             val lp = act.window.attributes; lp.screenBrightness = -1f; act.window.attributes = lp
             act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
@@ -267,84 +359,21 @@ fun PlayerScreen(v: Vid, prefs: SharedPreferences, onClose: () -> Unit) {
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView({ PlayerView(it).apply { this.player = player; useController = false } },
-            Modifier.fillMaxSize().graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y))
+            Modifier.fillMaxSize().graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y),
+            update = { it.resizeMode = when (resize) { 1 -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM; 2 -> AspectRatioFrameLayout.RESIZE_MODE_FILL; else -> AspectRatioFrameLayout.RESIZE_MODE_FIT } })
 
-        // Gesture layer: tap, double tap, long press (2x), brightness/volume, pinch zoom
         Box(Modifier.fillMaxSize()
-            .pointerInput(si) {
+            .pointerInput(si, locked) {
                 detectTapGestures(
                     onTap = { showCtl = !showCtl },
                     onDoubleTap = { o ->
-                        val d = if (o.x < size.width / 2) -10000L else 10000L
-                        player.seekTo((player.currentPosition + d).coerceAtLeast(0))
+                        if (!locked && gest) player.seekTo((player.currentPosition + (if (o.x < size.width / 2) -seekMs else seekMs)).coerceAtLeast(0))
                     },
-                    onLongPress = { player.setPlaybackSpeed(2f); hud = "2x ⏩" },
+                    onLongPress = { if (!locked && gest) { player.setPlaybackSpeed(2f); hud = "2x ⏩" } },
                     onPress = { tryAwaitRelease(); player.setPlaybackSpeed(speeds[si]); hud = "" }
                 )
             }
-            .pointerInput(Unit) {
+            .pointerInput(locked) {
                 var left = true
                 var volF = 0f
-                detectVerticalDragGestures(
-                    onDragStart = { o -> left = o.x < size.width / 2; volF = am.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() },
-                    onDragEnd = { hud = "" }, onDragCancel = { hud = "" },
-                    onVerticalDrag = { _, dy ->
-                        val d = -dy / size.height
-                        if (left) {
-                            val lp = act.window.attributes
-                            val cur = if (lp.screenBrightness < 0f) 0.5f else lp.screenBrightness
-                            lp.screenBrightness = (cur + d).coerceIn(0.02f, 1f)
-                            act.window.attributes = lp
-                            hud = "☀ ${(lp.screenBrightness * 100).toInt()}%"
-                        } else {
-                            volF = (volF + d * maxVol * 1.5f).coerceIn(0f, maxVol.toFloat())
-                            am.setStreamVolume(AudioManager.STREAM_MUSIC, volF.roundToInt(), 0)
-                            hud = "🔊 ${(volF / maxVol * 100).toInt()}%"
-                        }
-                    })
-            }
-            .pointerInput(Unit) {
-                awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
-                    do {
-                        val ev = awaitPointerEvent()
-                        if (ev.changes.size >= 2) {
-                            scale = (scale * ev.calculateZoom()).coerceIn(1f, 4f)
-                            offset = if (scale <= 1.01f) Offset.Zero else offset + ev.calculatePan()
-                            ev.changes.forEach { it.consume() }
-                        }
-                    } while (ev.changes.any { it.pressed })
-                }
-            })
-
-        if (hud.isNotEmpty()) Text(hud, Modifier.align(Alignment.Center).background(Color(0x99000000), RoundedCornerShape(8.dp)).padding(12.dp),
-            color = Color.White, fontSize = 20.sp)
-
-        if (showCtl) {
-            Row(Modifier.align(Alignment.TopStart).fillMaxWidth().background(Color(0x66000000)).padding(horizontal = 4.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                Text("←", Modifier.clickable { onClose() }.padding(10.dp), color = Color.White, fontSize = 22.sp)
-                Text(v.name, Modifier.weight(1f), color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("${speeds[si]}x", Modifier.clickable { si = (si + 1) % speeds.size; player.setPlaybackSpeed(speeds[si]) }.padding(10.dp), color = Color.White)
-                Text(if (sleepMin == 0) "😴" else "😴${sleepMin}m",
-                    Modifier.clickable { sleepMin = if (sleepMin == 0) 15 else if (sleepMin == 15) 30 else 0 }.padding(10.dp), color = Color.White)
-                Text("⟳", Modifier.clickable {
-                    land = !land
-                    act.requestedOrientation = if (land) ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                }.padding(10.dp), color = Color.White, fontSize = 22.sp)
-            }
-            Row(Modifier.align(Alignment.Center), horizontalArrangement = Arrangement.spacedBy(28.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("⏪", Modifier.clickable { player.seekTo((player.currentPosition - 10000).coerceAtLeast(0)) }.padding(8.dp), fontSize = 28.sp)
-                Text(if (isPlay) "⏸" else "▶", Modifier.clickable { if (player.isPlaying) player.pause() else player.play() }.padding(8.dp), fontSize = 44.sp)
-                Text("⏩", Modifier.clickable { player.seekTo(player.currentPosition + 10000) }.padding(8.dp), fontSize = 28.sp)
-            }
-            Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color(0x66000000)).padding(horizontal = 12.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                Text(fmt(pos), color = Color.White, fontSize = 12.sp)
-                Slider((pos.toFloat() / dur).coerceIn(0f, 1f), { pos = (it * dur).toLong(); player.seekTo(pos) },
-                    Modifier.weight(1f).padding(horizontal = 8.dp))
-                Text(fmt(dur), color = Color.White, fontSize = 12.sp)
-            }
-        }
-    }
-}
+                detectVerticalDrag
