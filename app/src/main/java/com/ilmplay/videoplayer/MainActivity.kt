@@ -376,4 +376,83 @@ fun PlayerScreen(list: List<Vid>, startIdx: Int, prefs: SharedPreferences, cfg: 
             .pointerInput(locked) {
                 var left = true
                 var volF = 0f
-                detectVerticalDrag
+                                detectVerticalDragGestures(
+                    onDragStart = { o -> left = o.x < size.width / 2; volF = am.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() },
+                    onDragEnd = { volP = -1; briP = -1 }, onDragCancel = { volP = -1; briP = -1 },
+                    onVerticalDrag = { _, dy ->
+                        if (!locked && gest && !zooming) {
+                            val d = -dy / size.height
+                            if (left) {
+                                volF = (volF + d * maxVol * 1.5f).coerceIn(0f, maxVol.toFloat())
+                                am.setStreamVolume(AudioManager.STREAM_MUSIC, volF.roundToInt(), 0)
+                                volP = (volF / maxVol * 100).toInt()
+                            } else {
+                                val lp = act.window.attributes
+                                val c = if (lp.screenBrightness < 0f) 0.5f else lp.screenBrightness
+                                lp.screenBrightness = (c + d).coerceIn(0.02f, 1f)
+                                act.window.attributes = lp
+                                briP = (lp.screenBrightness * 100).toInt()
+                            }
+                        }
+                    })
+            }
+            .pointerInput(locked) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val ev = awaitPointerEvent()
+                        if (!locked && ev.changes.size >= 2) {
+                            zooming = true
+                            scale = (scale * ev.calculateZoom()).coerceIn(1f, 4f)
+                            offset = if (scale <= 1.01f) Offset.Zero else offset + ev.calculatePan()
+                            ev.changes.forEach { it.consume() }
+                        }
+                    } while (ev.changes.any { it.pressed })
+                    zooming = false
+                }
+            })
+
+        if (volP >= 0) SideBar(Modifier.align(Alignment.CenterStart).padding(start = 36.dp), volP, Icons.Rounded.VolumeUp)
+        if (briP >= 0) SideBar(Modifier.align(Alignment.CenterEnd).padding(end = 36.dp), briP, Icons.Rounded.BrightnessMedium)
+        if (hud.isNotEmpty()) Text(hud, Modifier.align(Alignment.Center).background(Color(0x99000000), RoundedCornerShape(8.dp)).padding(12.dp), color = Color.White, fontSize = 20.sp)
+
+        if (showCtl && locked) {
+            IconButton({ locked = false }, Modifier.align(Alignment.BottomStart).padding(16.dp)) { Icon(Icons.Rounded.Lock, null, tint = Color.White) }
+        }
+        if (showCtl && !locked) {
+            Row(Modifier.align(Alignment.TopStart).fillMaxWidth().background(Color(0x80000000)).padding(horizontal = 4.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClose) { Icon(Icons.Rounded.ArrowBack, null, tint = Color.White) }
+                Text(v.name, Modifier.weight(1f), color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 16.sp)
+                IconButton({ resize = (resize + 1) % 3 }) { Icon(Icons.Rounded.AspectRatio, null, tint = Color.White) }
+                IconButton({ if (pa < 0) pa = player.currentPosition else if (pb < 0) { if (player.currentPosition > pa) pb = player.currentPosition } else { pa = -1; pb = -1 } }) {
+                    Icon(Icons.Rounded.Repeat, null, tint = if (pa >= 0) MaterialTheme.colorScheme.primary else Color.White)
+                }
+                IconButton({
+                    land = !land
+                    act.requestedOrientation = if (land) ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                }) { Icon(Icons.Rounded.ScreenRotation, null, tint = Color.White) }
+            }
+            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color(0x80000000)).padding(horizontal = 12.dp, vertical = 6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(fmt(pos), color = Color.White, fontSize = 12.sp)
+                    Slider((pos.toFloat() / dur).coerceIn(0f, 1f), { pos = (it * dur).toLong(); player.seekTo(pos) },
+                        Modifier.weight(1f).padding(horizontal = 8.dp))
+                    Text(fmt(dur), color = Color.White, fontSize = 12.sp)
+                }
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    IconButton({ locked = true }, Modifier.align(Alignment.CenterStart)) { Icon(Icons.Rounded.LockOpen, null, tint = Color.White) }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                        IconButton({ open(idx - 1) }, enabled = idx > 0) { Icon(Icons.Rounded.SkipPrevious, null, tint = Color.White, modifier = Modifier.size(32.dp)) }
+                        IconButton({ if (player.isPlaying) player.pause() else player.play() }, Modifier.size(56.dp)) {
+                            Icon(if (isPlay) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null, tint = Color.White, modifier = Modifier.size(48.dp))
+                        }
+                        IconButton({ open(idx + 1) }, enabled = idx < list.lastIndex) { Icon(Icons.Rounded.SkipNext, null, tint = Color.White, modifier = Modifier.size(32.dp)) }
+                    }
+                    Text("${speeds[si]}x", Modifier.align(Alignment.CenterEnd).clickable { si = (si + 1) % speeds.size; player.setPlaybackSpeed(speeds[si]) }.padding(12.dp),
+                        color = Color.White, fontSize = 18.sp)
+                }
+            }
+        }
+    }
+}
