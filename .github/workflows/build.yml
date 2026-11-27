@@ -20,7 +20,7 @@ jobs:
       - name: Show errors
         if: failure()
         run: |
-          grep -E "^e: |What went wrong|FAILED" -A2 build.log | head -60
+          grep -E "AAPT|linking failed|ERROR|^e: " -A4 build.log | head -40
       - uses: actions/upload-artifact@v4
         with:
           name: FajrPlayer-debug-apk
