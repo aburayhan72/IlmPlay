@@ -19,7 +19,8 @@ jobs:
         run: gradle assembleDebug --no-daemon > build.log 2>&1
       - name: Show errors
         if: failure()
-        run: grep -E "^e: |What went wrong|error:|FAILED" -A2 build.log | head -60
+        run: |
+          grep -E "^e: |What went wrong|FAILED" -A2 build.log | head -60
       - uses: actions/upload-artifact@v4
         with:
           name: FajrPlayer-debug-apk
