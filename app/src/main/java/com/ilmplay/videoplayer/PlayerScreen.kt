@@ -1,14 +1,21 @@
 package com.ilmplay.videoplayer
 
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.ActivityInfo
 import android.media.AudioManager
+import android.media.audiofx.AudioEffect
+import android.view.View
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
@@ -18,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -33,6 +41,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import kotlin.math.roundToInt
@@ -52,6 +61,24 @@ fun SideBar(modifier: Modifier, pct: Int, icon: ImageVector) {
 }
 
 @Composable
+fun QChip(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Column(Modifier.clip(RoundedCornerShape(8.dp)).clickable { onClick() }.padding(horizontal = 12.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(icon, null, tint = Color.White, modifier = Modifier.size(22.dp))
+        Text(label, color = Color.White, fontSize = 10.sp)
+    }
+}
+
+@Composable
+fun SeekRow(pos: State<Long>, dur: Long, onSeek: (Long) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(fmt(pos.value), color = Color.White, fontSize = 12.sp)
+        Slider((pos.value.toFloat() / dur).coerceIn(0f, 1f), { onSeek((it * dur).toLong()) }, Modifier.weight(1f).padding(horizontal = 8.dp))
+        Text(fmt(dur), color = Color.White, fontSize = 12.sp)
+    }
+}
+
+@Composable
 fun PlayerScreen(list: List<Vid>, startIdx: Int, prefs: SharedPreferences, cfg: SharedPreferences, onClose: () -> Unit) {
     val ctx = LocalContext.current
     val act = ctx as ComponentActivity
@@ -65,6 +92,7 @@ fun PlayerScreen(list: List<Vid>, startIdx: Int, prefs: SharedPreferences, cfg: 
     val v = list[idx]
     val player = remember {
         ExoPlayer.Builder(ctx).build().apply {
+            setSeekParameters(SeekParameters.CLOSEST_SYNC)
             setMediaItem(MediaItem.fromUri(list[startIdx].uri)); prepare()
             seekTo(prefs.getLong("p${list[startIdx].id}", 0)); playWhenReady = true
             setPlaybackSpeed(cfg.getFloat("speed", 1f))
@@ -74,7 +102,7 @@ fun PlayerScreen(list: List<Vid>, startIdx: Int, prefs: SharedPreferences, cfg: 
     var showCtl by remember { mutableStateOf(false) }
     var locked by remember { mutableStateOf(false) }
     var isPlay by remember { mutableStateOf(true) }
-    var pos by remember { mutableStateOf(0L) }
+    val posS = remember { mutableStateOf(0L) }
     var hud by remember { mutableStateOf("") }
     var volP by remember { mutableStateOf(-1) }
     var briP by remember { mutableStateOf(-1) }
@@ -85,6 +113,9 @@ fun PlayerScreen(list: List<Vid>, startIdx: Int, prefs: SharedPreferences, cfg: 
     var resize by remember { mutableStateOf(0) }
     var pa by remember { mutableStateOf(-1L) }
     var pb by remember { mutableStateOf(-1L) }
+    var menu by remember { mutableStateOf(false) }
+    var cc by remember { mutableStateOf(true) }
+    var fav by remember(idx) { mutableStateOf(prefs.getBoolean("f${v.id}", false)) }
     val dur = v.dur.coerceAtLeast(1L)
 
     fun save() {
@@ -99,14 +130,25 @@ fun PlayerScreen(list: List<Vid>, startIdx: Int, prefs: SharedPreferences, cfg: 
         player.setMediaItem(MediaItem.fromUri(nv.uri)); player.prepare()
         player.seekTo(prefs.getLong("p${nv.id}", 0)); player.play()
     }
+    fun abToggle() {
+        val p = player.currentPosition
+        if (pa < 0) pa = p else if (pb < 0) { if (p > pa) pb = p } else { pa = -1; pb = -1 }
+    }
+    fun rotate() {
+        land = !land
+        act.requestedOrientation = if (land) ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+    }
     LaunchedEffect(Unit) {
         while (true) {
-            pos = player.currentPosition; isPlay = player.isPlaying
-            if (pb > 0 && pos >= pb && pa >= 0) player.seekTo(pa)
-            delay(300)
+            val p = player.currentPosition
+            isPlay = player.isPlaying
+            if (showCtl || pb > 0) posS.value = p
+            if (pb > 0 && pa >= 0 && p >= pb) player.seekTo(pa)
+            delay(if (showCtl || pb > 0) 250 else 500)
         }
     }
-    LaunchedEffect(showCtl, isPlay) { if (showCtl && isPlay) { delay(3000); showCtl = false } }
+    LaunchedEffect(showCtl) { if (showCtl) posS.value = player.currentPosition }
+    LaunchedEffect(showCtl, isPlay, menu) { if (showCtl && isPlay && !menu) { delay(3500); showCtl = false } }
     DisposableEffect(Unit) {
         act.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val ic = WindowCompat.getInsetsController(act.window, act.window.decorView)
@@ -124,7 +166,10 @@ fun PlayerScreen(list: List<Vid>, startIdx: Int, prefs: SharedPreferences, cfg: 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView({ PlayerView(it).apply { this.player = player; useController = false } },
             Modifier.fillMaxSize().graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y),
-            update = { it.resizeMode = when (resize) { 1 -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM; 2 -> AspectRatioFrameLayout.RESIZE_MODE_FILL; else -> AspectRatioFrameLayout.RESIZE_MODE_FIT } })
+            update = {
+                it.resizeMode = when (resize) { 1 -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM; 2 -> AspectRatioFrameLayout.RESIZE_MODE_FILL; else -> AspectRatioFrameLayout.RESIZE_MODE_FIT }
+                it.subtitleView?.visibility = if (cc) View.VISIBLE else View.GONE
+            })
 
         Box(Modifier.fillMaxSize()
             .pointerInput(si, locked) {
@@ -133,7 +178,7 @@ fun PlayerScreen(list: List<Vid>, startIdx: Int, prefs: SharedPreferences, cfg: 
                     onDoubleTap = { o ->
                         if (!locked && gest) player.seekTo((player.currentPosition + (if (o.x < size.width / 2) -seekMs else seekMs)).coerceAtLeast(0))
                     },
-                    onLongPress = { if (!locked && gest) { player.setPlaybackSpeed(2f); hud = "2x " } },
+                    onLongPress = { if (!locked && gest) { player.setPlaybackSpeed(2f); hud = "2x ⏩" } },
                     onPress = { tryAwaitRelease(); player.setPlaybackSpeed(speeds[si]); hud = "" }
                 )
             }
@@ -180,41 +225,66 @@ fun PlayerScreen(list: List<Vid>, startIdx: Int, prefs: SharedPreferences, cfg: 
         if (briP >= 0) SideBar(Modifier.align(Alignment.CenterEnd).padding(end = 36.dp), briP, Icons.Rounded.BrightnessMedium)
         if (hud.isNotEmpty()) Text(hud, Modifier.align(Alignment.Center).background(Color(0x99000000), RoundedCornerShape(8.dp)).padding(12.dp), color = Color.White, fontSize = 20.sp)
 
-        if (showCtl && locked) {
-            IconButton({ locked = false }, Modifier.align(Alignment.BottomStart).padding(16.dp)) { Icon(Icons.Rounded.Lock, null, tint = Color.White) }
-        }
-        if (showCtl && !locked) {
-            Row(Modifier.align(Alignment.TopStart).fillMaxWidth().background(Color(0x80000000)).padding(horizontal = 4.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClose) { Icon(Icons.Rounded.ArrowBack, null, tint = Color.White) }
-                Text(v.name, Modifier.weight(1f), color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 16.sp)
-                IconButton({ resize = (resize + 1) % 3 }) { Icon(Icons.Rounded.AspectRatio, null, tint = Color.White) }
-                IconButton({ if (pa < 0) pa = player.currentPosition else if (pb < 0) { if (player.currentPosition > pa) pb = player.currentPosition } else { pa = -1; pb = -1 } }) {
-                    Icon(Icons.Rounded.Repeat, null, tint = if (pa >= 0) MaterialTheme.colorScheme.primary else Color.White)
-                }
-                IconButton({
-                    land = !land
-                    act.requestedOrientation = if (land) ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                }) { Icon(Icons.Rounded.ScreenRotation, null, tint = Color.White) }
+        AnimatedVisibility(showCtl && locked, Modifier.fillMaxSize(), enter = fadeIn(), exit = fadeOut()) {
+            Box(Modifier.fillMaxSize()) {
+                IconButton({ locked = false }, Modifier.align(Alignment.BottomStart).padding(16.dp)) { Icon(Icons.Rounded.Lock, null, tint = Color.White) }
             }
-            Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color(0x80000000)).padding(horizontal = 12.dp, vertical = 6.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(fmt(pos), color = Color.White, fontSize = 12.sp)
-                    Slider((pos.toFloat() / dur).coerceIn(0f, 1f), { pos = (it * dur).toLong(); player.seekTo(pos) },
-                        Modifier.weight(1f).padding(horizontal = 8.dp))
-                    Text(fmt(dur), color = Color.White, fontSize = 12.sp)
-                }
-                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    IconButton({ locked = true }, Modifier.align(Alignment.CenterStart)) { Icon(Icons.Rounded.LockOpen, null, tint = Color.White) }
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                        IconButton({ open(idx - 1) }, enabled = idx > 0) { Icon(Icons.Rounded.SkipPrevious, null, tint = Color.White, modifier = Modifier.size(32.dp)) }
-                        IconButton({ if (player.isPlaying) player.pause() else player.play() }, Modifier.size(56.dp)) {
-                            Icon(if (isPlay) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null, tint = Color.White, modifier = Modifier.size(48.dp))
+        }
+
+        AnimatedVisibility(showCtl && !locked, Modifier.fillMaxSize(), enter = fadeIn(), exit = fadeOut()) {
+            Box(Modifier.fillMaxSize()) {
+                Column(Modifier.align(Alignment.TopStart).fillMaxWidth()
+                    .background(Brush.verticalGradient(listOf(Color(0xCC000000), Color.Transparent))).statusBarsPadding()) {
+                    Row(Modifier.padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClose) { Icon(Icons.Rounded.ArrowBack, null, tint = Color.White) }
+                        Text(v.name, Modifier.weight(1f), color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp)
+                        IconButton({ fav = !fav; prefs.edit().putBoolean("f${v.id}", fav).apply() }) {
+                            Icon(if (fav) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, null, tint = Color.White)
                         }
-                        IconButton({ open(idx + 1) }, enabled = idx < list.lastIndex) { Icon(Icons.Rounded.SkipNext, null, tint = Color.White, modifier = Modifier.size(32.dp)) }
+                        IconButton({ cc = !cc }) {
+                            Icon(Icons.Rounded.ClosedCaption, null, tint = if (cc) Color.White else Color(0x80FFFFFF))
+                        }
+                        Box {
+                            IconButton({ menu = true }) { Icon(Icons.Rounded.MoreVert, null, tint = Color.White) }
+                            DropdownMenu(menu, { menu = false }) {
+                                DropdownMenuItem({ Text("Aspect ratio") }, { resize = (resize + 1) % 3; menu = false })
+                                DropdownMenuItem({ Text(if (pa < 0) "A-B repeat" else if (pb < 0) "Set point B" else "Clear A-B") }, { abToggle(); menu = false })
+                            }
+                        }
                     }
-                    Text("${speeds[si]}x", Modifier.align(Alignment.CenterEnd).clickable { si = (si + 1) % speeds.size; player.setPlaybackSpeed(speeds[si]) }.padding(12.dp),
-                        color = Color.White, fontSize = 18.sp)
+                    Row(Modifier.horizontalScroll(rememberScrollState()).padding(start = 8.dp)) {
+                        QChip(Icons.Rounded.ScreenRotation, "Rotation") { rotate() }
+                        QChip(Icons.Rounded.Equalizer, "Equalizer") {
+                            runCatching {
+                                ctx.startActivity(Intent(AudioEffect.ACTION_DISPLAY_AUDIO_EFFECT_CONTROL_PANEL)
+                                    .putExtra(AudioEffect.EXTRA_AUDIO_SESSION, player.audioSessionId)
+                                    .putExtra(AudioEffect.EXTRA_CONTENT_TYPE, AudioEffect.CONTENT_TYPE_MOVIE))
+                            }
+                        }
+                        QChip(Icons.Rounded.Speed, "${speeds[si]}x") { si = (si + 1) % speeds.size; player.setPlaybackSpeed(speeds[si]) }
+                        QChip(Icons.Rounded.AspectRatio, "Ratio") { resize = (resize + 1) % 3 }
+                        QChip(Icons.Rounded.Repeat, if (pa < 0) "A-B" else if (pb < 0) "Set B" else "Clear") { abToggle() }
+                    }
+                }
+                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC000000)))).navigationBarsPadding().padding(top = 16.dp, bottom = 4.dp)) {
+                    SeekRow(posS, dur) { posS.value = it; player.seekTo(it) }
+                    Box(Modifier.fillMaxWidth().padding(horizontal = 4.dp), contentAlignment = Alignment.Center) {
+                        IconButton({ locked = true }, Modifier.align(Alignment.CenterStart).size(44.dp)) { Icon(Icons.Rounded.LockOpen, null, tint = Color.White) }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton({ open(idx - 1) }, Modifier.size(40.dp), enabled = idx > 0) { Icon(Icons.Rounded.SkipPrevious, null, tint = Color.White, modifier = Modifier.size(28.dp)) }
+                            IconButton({ player.seekTo((player.currentPosition - seekMs).coerceAtLeast(0)) }, Modifier.size(40.dp)) { Icon(Icons.Rounded.Replay10, null, tint = Color.White, modifier = Modifier.size(28.dp)) }
+                            Box(Modifier.padding(horizontal = 6.dp).size(60.dp).border(2.dp, Color.White, CircleShape).clip(CircleShape)
+                                .clickable { if (player.isPlaying) player.pause() else player.play() }, contentAlignment = Alignment.Center) {
+                                Icon(if (isPlay) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null, tint = Color.White, modifier = Modifier.size(36.dp))
+                            }
+                            IconButton({ player.seekTo(player.currentPosition + seekMs) }, Modifier.size(40.dp)) { Icon(Icons.Rounded.Forward10, null, tint = Color.White, modifier = Modifier.size(28.dp)) }
+                            IconButton({ open(idx + 1) }, Modifier.size(40.dp), enabled = idx < list.lastIndex) { Icon(Icons.Rounded.SkipNext, null, tint = Color.White, modifier = Modifier.size(28.dp)) }
+                        }
+                        IconButton({ rotate() }, Modifier.align(Alignment.CenterEnd).size(44.dp)) {
+                            Icon(if (land) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen, null, tint = Color.White)
+                        }
+                    }
                 }
             }
         }
